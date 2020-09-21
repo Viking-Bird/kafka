@@ -49,9 +49,9 @@ public class ProducerRecord<K, V> {
     private final String topic;
     private final Integer partition;
     private final Headers headers;
-    private final K key;
+    private final K key; // 消息键，可以用来对消息进行二次归类
     private final V value;
-    private final Long timestamp;
+    private final Long timestamp; // 消息的时间戳，有CreateTime或者LogAppendTime两种类型，分别表示消息创建时间和消息追加到日志文件的时间
 
     /**
      * Creates a record with a specified timestamp to be sent to a specified topic and partition
