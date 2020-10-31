@@ -122,32 +122,43 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
     }
   }
 
+  /**
+    * 添加任务，递归添加直到添加该任务进合适的时间轮的bucket中
+    *
+    * @param timerTaskEntry
+    * @return
+    */
   def add(timerTaskEntry: TimerTaskEntry): Boolean = {
     val expiration = timerTaskEntry.expirationMs
 
+    //任务取消
     if (timerTaskEntry.cancelled) {
       // Cancelled
       false
-    } else if (expiration < currentTime + tickMs) {
+    } else if (expiration < currentTime + tickMs) { // 任务过期后会被执行
       // Already expired
       false
-    } else if (expiration < currentTime + interval) {
+    } else if (expiration < currentTime + interval) { //任务过期时间比当前时间轮时间加周期小说明任务过期时间在本时间轮周期内
       // Put in its own bucket
       val virtualId = expiration / tickMs
+      //找到任务对应本时间轮的bucket
       val bucket = buckets((virtualId % wheelSize.toLong).toInt)
       bucket.add(timerTaskEntry)
 
       // Set the bucket expiration time
+      //只有本bucket内的任务都过期后才会bucket.setExpiration返回true此时将bucket放入延迟队列
       if (bucket.setExpiration(virtualId * tickMs)) {
         // The bucket needs to be enqueued because it was an expired bucket
         // We only need to enqueue the bucket when its expiration time has changed, i.e. the wheel has advanced
         // and the previous buckets gets reused; further calls to set the expiration within the same wheel cycle
         // will pass in the same value and hence return false, thus the bucket with the same expiration will not
         // be enqueued multiple times.
+        //bucket是一个TimerTaskList，它实现了java.util.concurrent.Delayed接口，里面是一个多任务组成的链表，图2有说明
         queue.offer(bucket)
       }
       true
     } else {
+      //任务的过期时间不在本时间轮周期内说明需要升级时间轮，如果不存在则构造上一层时间轮，继续用上一层时间轮添加任务
       // Out of the interval. Put it into the parent timer
       if (overflowWheel == null) addOverflowWheel()
       overflowWheel.add(timerTaskEntry)

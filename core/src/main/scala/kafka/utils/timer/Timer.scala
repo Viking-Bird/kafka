@@ -87,10 +87,17 @@ class SystemTimer(executorName: String,
     }
   }
 
+  /**
+    * 在Systemtimer中添加一个任务，任务被包装为一个TimerTaskEntry
+    *
+    * @param timerTaskEntry
+    */
   private def addTimerTaskEntry(timerTaskEntry: TimerTaskEntry): Unit = {
+    // 先判断是否可以添加进时间轮中，如果不可以添加进去代表任务已经过期或者任务被取消，注意这里的timingWheel持有上一层时间轮的引用，所以可能存在递归调用
     if (!timingWheel.add(timerTaskEntry)) {
       // Already expired or cancelled
       if (!timerTaskEntry.cancelled)
+        // 过期任务直接线程池异步执行掉
         taskExecutor.submit(timerTaskEntry.timerTask)
     }
   }

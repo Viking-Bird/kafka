@@ -138,6 +138,7 @@ public final class Cluster {
             this.partitionsByTopic.put(topic, Collections.unmodifiableList(partitionList));
             List<PartitionInfo> availablePartitions = new ArrayList<>();
             for (PartitionInfo part : partitionList) {
+                // 如果分区的leader不为null，则将分区记录为可用分区
                 if (part.leader() != null)
                     availablePartitions.add(part);
             }
