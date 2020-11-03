@@ -122,6 +122,11 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
     unit.convert(max(getExpiration - Time.SYSTEM.hiResClockMs, 0), TimeUnit.MILLISECONDS)
   }
 
+  /**
+    * 根据过期比较大小
+    * @param d
+    * @return
+    */
   def compareTo(d: Delayed): Int = {
 
     val other = d.asInstanceOf[TimerTaskList]
