@@ -1164,17 +1164,28 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         return poll(time.timer(timeout), true);
     }
 
+    /**
+     *
+     * @param timer
+     * @param includeMetadataInTimeout 拉取消息的超时时间是否包含更新元数据的时间，默认为true，即包含。
+     * @return
+     */
     private ConsumerRecords<K, V> poll(final Timer timer, final boolean includeMetadataInTimeout) {
+        // 1、两个检查：（1）是否有其他线程再执行，如果有抛出异常，因为 KafkaConsumer 是线程不安全的，同一时间只能一个线程执行。
+        // （2）KafkaConsumer 没有被关闭。
         acquireAndEnsureOpen();
         try {
+            // 2、如果当前消费者未订阅任何主题或者没有指定队列，则抛出错误，结束本次消息拉取。
             if (this.subscriptions.hasNoSubscriptionOrUserAssignment()) {
                 throw new IllegalStateException("Consumer is not subscribed to any topics or assigned any partitions");
             }
 
             // poll for new data until the timeout expires
+            // 3、使用do...while循环结构拉取消息
             do {
                 client.maybeTriggerWakeup();
 
+                // 4、更新元数据
                 if (includeMetadataInTimeout) {
                     if (!updateAssignmentMetadataIfNeeded(timer)) {
                         return ConsumerRecords.empty();
@@ -1185,9 +1196,9 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     }
                 }
 
-                // 调用 pollForFetches 向broker拉取消息
+                // 5、调用 pollForFetches 向broker拉取消息
                 final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollForFetches(timer);
-                // 如果拉取到的消息集合不为空，再返回该批消息之前，如果还有挤压的拉取请求，可以继续发送拉取请求，
+                // 如果拉取到的消息集合不为空，再返回该批消息之前，如果还有积压的拉取请求，可以继续发送拉取请求，
                 // 但此时会禁用warkup，主要的目的是用户在处理消息时，KafkaConsumer 还可以继续向broker 拉取消息。
                 if (!records.isEmpty()) {
                     // before returning the fetched records, we can send off the next round of fetches
@@ -1199,7 +1210,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     if (fetcher.sendFetches() > 0 || client.hasPendingRequests()) {
                         client.pollNoWakeup();
                     }
-                // 执行消费拦截器。
+                // 6、执行消费拦截器。
                     return this.interceptors.onConsume(new ConsumerRecords<>(records));
                 }
             } while (timer.notExpired());
@@ -1218,18 +1229,22 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             return false;
         }
 
+        // 更新拉取位移
         return updateFetchPositions(timer);
     }
 
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollForFetches(Timer timer) {
+        // 1、计算本次拉取的超时时间
         long pollTimeout = Math.min(coordinator.timeToNextPoll(timer.currentTimeMs()), timer.remainingMs());
 
+        // 2、如果数据已经拉回到本地，直接返回数据。
         // if data is available already, return it immediately
         final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
         if (!records.isEmpty()) {
             return records;
         }
 
+        // 3、组装发送请求，并将请求存储在待发送请求列表中。
         // send any new fetches (won't resend pending fetches)
         fetcher.sendFetches();
 
@@ -1242,20 +1257,24 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             pollTimeout = retryBackoffMs;
         }
 
+        // 通过调用NetworkClient 的 poll 方法发起消息拉取操作（触发网络读写）。
         Timer pollTimer = time.timer(pollTimeout);
         client.poll(pollTimer, () -> {
             // since a fetch might be completed by the background thread, we need this poll condition
             // to ensure that we do not block unnecessarily in poll()
             return !fetcher.hasCompletedFetches();
         });
+        // 更新本次拉取的时间。
         timer.update(pollTimer.currentTimeMs());
 
         // after the long poll, we should check whether the group needs to rebalance
         // prior to returning data so that the group can stabilize faster
+        // 检查是需要重平衡。
         if (coordinator.rejoinNeededOrPending()) {
             return Collections.emptyMap();
         }
 
+        // 将从 broker 读取到的数据返回（即封装成消息）。
         return fetcher.fetchedRecords();
     }
 

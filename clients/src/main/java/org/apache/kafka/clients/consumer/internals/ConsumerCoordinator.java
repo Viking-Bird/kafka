@@ -304,19 +304,23 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
      * Returns early if the timeout expires
      *
      * @param timer Timer bounding how long this method can block
-     * @return true iff the operation succeeded
+     * @return true if the operation succeeded
      */
     public boolean poll(Timer timer) {
+        // 执行已完成的 offset (消费进度)提交请求的回调函数。
         invokeCompletedOffsetCommitCallbacks();
 
         if (subscriptions.partitionsAutoAssigned()) {
             // Always update the heartbeat last poll time so that the heartbeat thread does not leave the
             // group proactively due to application inactivity even if (say) the coordinator cannot be found.
+            // 更新发送心跳相关的时间，例如heartbeatTimer、sessionTimer、pollTimer 分别代表发送最新发送心跳的时间、会话最新活跃时间、最新拉取消息。
             pollHeartbeat(timer.currentTimeMs());
+            // 如果不存在协调器或协调器已断开连接，则返回 false，结束本次拉取。如果协调器就绪，则继续往下走。
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
                 return false;
             }
 
+            // 判断是否需要触发重平衡，即消费组内的所有消费者重新分配topic中的分区信息，例如元数据发送变化，判断是否需要重新重平衡的关键点如下：
             if (rejoinNeededOrPending()) {
                 // due to a race condition between the initial metadata fetch and the initial rebalance,
                 // we need to ensure that the metadata is fresh before joining initially. This ensures
@@ -342,7 +346,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
                     return false;
                 }
             }
-        } else {
+        } else { // 用户手动为消费组指定负载的队列的相关处理逻辑
             // For manually assigned partitions, if there are no ready nodes, await metadata.
             // If connections to all nodes fail, wakeups triggered while attempting to send fetch
             // requests result in polls returning immediately, causing a tight loop of polls. Without
@@ -350,11 +354,13 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             // awaitMetadataUpdate() initiates new connections with configured backoff and avoids the busy loop.
             // When group management is used, metadata wait is already performed for this scenario as
             // coordinator is unknown, hence this check is not required.
+            // 如果需要更新元数据，并且还没有分区准备好，则同步阻塞等待元数据更新完毕。
             if (metadata.updateRequested() && !client.hasReadyNodes(timer.currentTimeMs())) {
                 client.awaitMetadataUpdate(timer);
             }
         }
 
+        // 如果开启了自动提交消费进度，并且已到下一次提交时间，则提交。
         maybeAutoCommitOffsetsAsync(timer.currentTimeMs());
         return true;
     }

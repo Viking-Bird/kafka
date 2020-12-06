@@ -201,10 +201,12 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
     /**
      * Set-up a fetch request for any node that we have assigned partitions for which doesn't already have
      * an in-flight fetch or pending fetch data.
-     * @return number of fetches sent
+     * @return number of fetches sent 已发送的fetch数量
      */
     public synchronized int sendFetches() {
+        // 调用 Fetcher 的 prepareFetchRequests 方法按节点组装拉取请求
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
+        // 遍历上面的待发请求，进一步组装请求。下面就是分节点发送拉取请求。
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
             final Node fetchTarget = entry.getKey();
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
@@ -219,6 +221,11 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
             }
             client.send(fetchTarget, request)
                     .addListener(new RequestFutureListener<ClientResponse>() {
+                        /**
+                         * 这里会注册事件监听器，当消息从 broker 拉取到本地后触发回调，
+                         * 即消息拉取请求收到返回结果后会将返回结果放入到completedFetches 中（代码@6），这就和上文消息拉取时 Fetcher 的 fetchedRecords 方法形成闭环。
+                         * @param resp
+                         */
                         @Override
                         public void onSuccess(ClientResponse resp) {
                             synchronized (Fetcher.this) {
@@ -243,6 +250,7 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
 
                                     log.debug("Fetch {} at offset {} for partition {} returned fetch data {}",
                                             isolationLevel, fetchOffset, partition, fetchData);
+                                    // 消息拉取请求收到返回结果后会将返回结果放入到completedFetches 中
                                     completedFetches.add(new CompletedFetch(partition, fetchOffset, fetchData, metricAggregator,
                                             resp.requestHeader().apiVersion()));
                                 }
@@ -477,16 +485,24 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
      * @throws TopicAuthorizationException If there is TopicAuthorization error in fetchResponse.
      */
     public Map<TopicPartition, List<ConsumerRecord<K, V>>> fetchedRecords() {
+        // 按分区存放已拉取的消息，返回给客户端进行处理。
         Map<TopicPartition, List<ConsumerRecord<K, V>>> fetched = new HashMap<>();
+        // 剩余可拉取的消息条数。
         int recordsRemaining = maxPollRecords;
 
         try {
+            /**
+             * 循环去取已经完成了 Fetch 请求的消息，该 while 循环有两个跳出条件：
+             * 如果拉取的消息已经达到一次拉取的最大消息条数，则跳出循环。
+             * 缓存中所有拉取结果已处理。
+             */
             while (recordsRemaining > 0) {
                 if (nextInLineRecords == null || nextInLineRecords.isFetched) {
                     CompletedFetch completedFetch = completedFetches.peek();
                     if (completedFetch == null) break;
 
                     try {
+                        // 解析已完成的fetch请求
                         nextInLineRecords = parseCompletedFetch(completedFetch);
                     } catch (Exception e) {
                         // Remove a completedFetch upon a parse with exception if (1) it contains no records, and
@@ -502,6 +518,7 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
                     }
                     completedFetches.poll();
                 } else {
+                    // 调用 fetchRecords 方法，按分区组装成 Map<TopicPartition, List<ConsumerRecord<K, V>>>，供消费者处理，例如供业务处理
                     List<ConsumerRecord<K, V>> records = fetchRecords(nextInLineRecords, recordsRemaining);
                     TopicPartition partition = nextInLineRecords.partition;
                     if (!records.isEmpty()) {
@@ -866,19 +883,21 @@ public class Fetcher<K, V> implements SubscriptionState.Listener, Closeable {
     private Map<Node, FetchSessionHandler.FetchRequestData> prepareFetchRequests() {
         Cluster cluster = metadata.fetch();
         Map<Node, FetchSessionHandler.Builder> fetchable = new LinkedHashMap<>();
+        // 首先通过调用 fetchablePartitions() 获取可发起拉取任务的分区信息，下文简单介绍一下。
         for (TopicPartition partition : fetchablePartitions()) {
+            // 获取该分区在客户端本地缓存中的 Leader 节点信息，如果其 Leader 节点信息为空，则发起更新元数据请求，本次拉取任务将不会包含该分区。
             Node node = cluster.leaderFor(partition);
             if (node == null) {
                 metadata.requestUpdate();
-            } else if (client.isUnavailable(node)) {
+            } else if (client.isUnavailable(node)) { // 如果客户端与该分区的 Leader 连接为完成，如果是因为权限的原因则抛出ACL相关异常，否则打印日志，本次拉取请求不会包含该分区。
                 client.maybeThrowAuthFailure(node);
 
                 // If we try to send during the reconnect blackout window, then the request is just
                 // going to be failed anyway before being sent, so skip the send for now
                 log.trace("Skipping fetch for partition {} because node {} is awaiting reconnect backoff", partition, node);
-            } else if (client.hasPendingRequests(node)) {
+            } else if (client.hasPendingRequests(node)) { // 判断该节点是否有挂起的拉取请求，即发送缓存区中是待发送的请求,如果有，本次将不会被拉取。
                 log.trace("Skipping fetch for partition {} because there is an in-flight request to {}", partition, node);
-            } else {
+            } else { // 构建拉取请求，分节点组织请求。
                 // if there is a leader and no in-flight requests, issue a new fetch
                 FetchSessionHandler.Builder builder = fetchable.get(node);
                 if (builder == null) {
